@@ -11,6 +11,7 @@ import { supabase } from '../lib/supabase';
 import { Pedido, ItemPedido, MovimentacaoCaixa, FinanceiroResumo, CategoriaMovimentacaoCaixa, Caixa, TipoMovimentacaoCaixa } from '../types';
 import { buscarCaixaAberto, sincronizarVendasCaixa } from '../lib/caixa';
 import { gerarEAbirRelatorio } from '../utils/relatorioCaixa';
+import { ErrorBoundary } from './ErrorBoundary';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip,
   ResponsiveContainer, PieChart as RePieChart, Pie, Cell,
@@ -381,7 +382,8 @@ export function FinanceiroTab() {
 
   const formatCurrency = (v: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
   const formatDate = (d: string) => new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(d));
-  const formatDateShort = (d: string) => new Date(d).toLocaleDateString('pt-BR');
+  const formatDateShort = (d: string) => { try { return new Date(d).toLocaleDateString('pt-BR'); } catch { return '-'; } };
+  const formatDataHora = (d: string) => { try { return new Date(d).toLocaleString('pt-BR'); } catch { return '-'; } };
   const formatPercent = (v: number) => `${(v * 100).toFixed(1)}%`;
 
   const getStatusLabel = (s: string) => ({ novo: 'Novo', aberto: 'Aberto', em_preparo: 'Em Preparo', pronto: 'Finalizado', entregue: 'Entregue', cancelado: 'Cancelado' }[s] || s);
@@ -729,6 +731,7 @@ export function FinanceiroTab() {
   );
 
   return (
+    <ErrorBoundary>
     <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -1165,7 +1168,7 @@ export function FinanceiroTab() {
                 {caixasFechados.map(c => (
                   <tr key={c.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatDataHora(c.aberto_em)}</td>
-                    <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatDataHora(c.fechado_em as string)}</td>
+                    <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{c.fechado_em ? formatDataHora(c.fechado_em) : '-'}</td>
                     <td className="px-4 py-3 text-right text-sm font-medium text-gray-800">{formatCurrency(Number(c.saldo_inicial))}</td>
                     <td className="px-4 py-3 text-right text-sm font-medium">{Number(c.saldo_final || 0) >= 0 ? <span className="text-emerald-600">{formatCurrency(Number(c.saldo_final))}</span> : <span className="text-red-600">{formatCurrency(Number(c.saldo_final))}</span>}</td>
                     <td className="px-4 py-3 text-center">
@@ -1533,5 +1536,6 @@ export function FinanceiroTab() {
         </div>
       )}
     </div>
+    </ErrorBoundary>
   );
 }
