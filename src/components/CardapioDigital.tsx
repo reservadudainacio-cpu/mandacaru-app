@@ -67,7 +67,7 @@ export function CardapioDigital() {
     }
   }
 
-  function adicionarAoCarrinho(produto: Produto) {
+  function adicionarAoCarrinho(produto: ProdutoCardapio) {
     const existente = carrinho.find((item) => item.produto.id === produto.id);
     if (existente) {
       setCarrinho(
@@ -122,7 +122,7 @@ export function CardapioDigital() {
     });
   }
 
-  async function salvarPedidoNoBanco(origem: 'sistema' | 'whatsapp'): Promise<{ pedidoId: string } | null> {
+  async function salvarPedidoNoBanco(): Promise<{ pedidoId: string } | null> {
     const enderecoCompleto = clienteData.tipo_entrega === 'delivery' ? montarEnderecoCompleto() : null;
 
     const itensPayload = carrinho.map(item => ({
@@ -173,7 +173,7 @@ export function CardapioDigital() {
     }
 
     setEnviando(true);
-    const result = await salvarPedidoNoBanco('sistema');
+    const result = await salvarPedidoNoBanco();
     setEnviando(false);
 
     if (result) {
@@ -193,7 +193,7 @@ export function CardapioDigital() {
 
     try {
       setEnviando(true);
-      const result = await salvarPedidoNoBanco('whatsapp');
+      const result = await salvarPedidoNoBanco();
       setEnviando(false);
 
       if (result) {

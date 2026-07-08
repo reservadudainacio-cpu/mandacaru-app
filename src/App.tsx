@@ -41,7 +41,7 @@ function AppContent() {
   useEffect(() => {
     if (modoCardapio) return;
 
-    supabase.from('configuracoes_empresa').select('*').limit(1).maybeSingle().then(setConfig);
+    supabase.from('configuracoes_empresa').select('*').limit(1).maybeSingle().then(({ data }) => setConfig(data));
 
     async function countPedidosOnline() {
       const { count } = await supabase

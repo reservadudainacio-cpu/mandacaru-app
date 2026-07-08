@@ -7,24 +7,21 @@ export function PedidosOnlineTab() {
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
   const [loading, setLoading] = useState(true);
   const [alarmeAtivo, setAlarmeAtivo] = useState(true);
-  const [lastPedidoId, setLastPedidoId] = useState<string | null>(null);
   const [selectedPedido, setSelectedPedido] = useState<Pedido | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const PAGE_SIZE = 50;
   const audioContextRef = useRef<AudioContext | null>(null);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const loadingRef = useRef(false);
   const pedidosRef = useRef<Pedido[]>([]);
   pedidosRef.current = pedidos;
+  const notifiedOrderIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     loadPedidos({ reset: true });
-    startPolling();
     setupRealtime();
     return () => {
-      stopPolling();
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current);
       }
@@ -131,22 +128,17 @@ export function PedidosOnlineTab() {
         itens: (p as Record<string, unknown>).itens_pedido,
       })) as Pedido[];
 
+      const existingIds = new Set(pedidosRef.current.map(p => p.id));
+      const novos = mapped.filter(p => !existingIds.has(p.id));
+
       if (reset) {
-        if (mapped.length > 0) {
-          const novoPrimeiro = mapped[0].id;
-          const isNewOrder = lastPedidoId && novoPrimeiro !== lastPedidoId;
-          if (isNewOrder && (mapped[0].status === 'novo' || mapped[0].status === 'aberto')) {
-            tocarAlarme();
-          }
-          setLastPedidoId(novoPrimeiro);
-        }
         setPedidos(mapped);
-      } else {
-        const existingIds = new Set(pedidosRef.current.map(p => p.id));
-        const novos = mapped.filter(p => !existingIds.has(p.id));
-        if (novos.length > 0) {
-          setPedidos(prev => [...prev, ...novos]);
-        }
+        setSelectedPedido(current => {
+          if (!current) return null;
+          return mapped.find(p => p.id === current.id) || current;
+        });
+      } else if (novos.length > 0) {
+        setPedidos(prev => [...prev, ...novos]);
       }
 
       setHasMore(hasMoreData);
@@ -162,18 +154,6 @@ export function PedidosOnlineTab() {
     }
   }
 
-  function startPolling() {
-    intervalRef.current = setInterval(() => {
-      loadPedidos({ reset: true });
-    }, 5000);
-  }
-
-  function stopPolling() {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-    }
-  }
-
   function setupRealtime() {
     channelRef.current = supabase
       .channel('pedidos-online-changes')
@@ -181,10 +161,14 @@ export function PedidosOnlineTab() {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'pedidos', filter: 'tipo=eq.online' },
         async (payload) => {
+          const id = (payload.new as Record<string, unknown>).id as string;
+          if (notifiedOrderIdsRef.current.has(id)) return;
+          notifiedOrderIdsRef.current.add(id);
+
           const { data, error } = await supabase
             .from('pedidos')
             .select('*, itens_pedido(*, produtos(*))')
-            .eq('id', (payload.new as Record<string, unknown>).id)
+            .eq('id', id)
             .single();
 
           if (error || !data) return;
@@ -198,7 +182,10 @@ export function PedidosOnlineTab() {
             if (prev.some(p => p.id === mapped.id)) return prev;
             return [mapped, ...prev];
           });
-          setLastPedidoId(mapped.id);
+          setSelectedPedido(current => {
+            if (current?.id === mapped.id) return mapped;
+            return current;
+          });
 
           if (mapped.status === 'novo' || mapped.status === 'aberto') {
             tocarAlarme();
@@ -209,24 +196,33 @@ export function PedidosOnlineTab() {
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'pedidos', filter: 'tipo=eq.online' },
         (payload) => {
+          const updated = payload.new as Record<string, unknown>;
+          const updatedId = updated.id as string;
+
           setPedidos(prev => prev.map(p =>
-            p.id === (payload.new as Record<string, unknown>).id
-              ? { ...p, ...(payload.new as Record<string, unknown>) }
-              : p
+            p.id === updatedId ? { ...p, ...updated } as Pedido : p
           ));
+          setSelectedPedido(current => {
+            if (current?.id === updatedId) {
+              return { ...current, ...updated } as Pedido;
+            }
+            return current;
+          });
         }
       )
       .subscribe();
   }
 
   async function atualizarStatusPedido(pedidoId: string, novoStatus: Pedido['status']) {
+    const updates: Record<string, unknown> = { status: novoStatus };
+    if (novoStatus === 'pronto' || novoStatus === 'entregue') {
+      updates.fechado_at = new Date().toISOString();
+    }
+
     try {
       const { error } = await supabase
         .from('pedidos')
-        .update({
-          status: novoStatus,
-          ...(novoStatus === 'pronto' || novoStatus === 'entregue' ? { fechado_at: new Date().toISOString() } : {}),
-        })
+        .update(updates)
         .eq('id', pedidoId);
 
       if (error) {
@@ -235,7 +231,12 @@ export function PedidosOnlineTab() {
         return;
       }
 
-      loadPedidos({ reset: true });
+      setPedidos(prev => prev.map(p =>
+        p.id === pedidoId ? { ...p, ...updates } as Pedido : p
+      ));
+      setSelectedPedido(current =>
+        current?.id === pedidoId ? { ...current, ...updates } as Pedido : current
+      );
     } catch (err) {
       if (import.meta.env.DEV) console.error('Erro ao atualizar status do pedido:', err);
       alert('Erro ao atualizar status do pedido. Tente novamente.');
