@@ -10,6 +10,7 @@ import {
 import { supabase } from '../lib/supabase';
 import { Pedido, ItemPedido, MovimentacaoCaixa, FinanceiroResumo, CategoriaMovimentacaoCaixa, Caixa, TipoMovimentacaoCaixa } from '../types';
 import { buscarCaixaAberto, sincronizarVendasCaixa } from '../lib/caixa';
+import { gerarEAbirRelatorio } from '../utils/relatorioCaixa';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip,
   ResponsiveContainer, PieChart as RePieChart, Pie, Cell,
@@ -83,12 +84,16 @@ export function FinanceiroTab() {
   const [abrirCaixaForm, setAbrirCaixaForm] = useState({ saldo_inicial: '', observacao: '' });
   const [fecharCaixaForm, setFecharCaixaForm] = useState({ observacao: '' });
   const [sangriaSuprimentoForm, setSangriaSuprimentoForm] = useState({ valor: '', descricao: '' });
+  const [showSucessoFecharCaixa, setShowSucessoFecharCaixa] = useState(false);
+  const [ultimoCaixaFechadoId, setUltimoCaixaFechadoId] = useState<string | null>(null);
+  const [relatorioLoading, setRelatorioLoading] = useState(false);
+  const [caixasFechados, setCaixasFechados] = useState<Caixa[]>([]);
 
   const Card = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
     <div className={`bg-white rounded-xl shadow-md p-4 ${className}`}>{children}</div>
   );
 
-  useEffect(() => { loadData(); loadCaixaAberto(); }, []);
+  useEffect(() => { loadData(); loadCaixaAberto(); loadCaixasFechados(); }, []);
 
   useEffect(() => {
     loadData();
@@ -570,6 +575,16 @@ export function FinanceiroTab() {
     setCaixaAberto(caixa);
   }
 
+  async function loadCaixasFechados() {
+    const { data } = await supabase
+      .from('caixas')
+      .select('*')
+      .not('fechado_em', 'is', null)
+      .order('fechado_em', { ascending: false })
+      .limit(20);
+    if (data) setCaixasFechados(data);
+  }
+
   function getSaldoCaixa(): number {
     if (!caixaAberto) return 0;
     const entradas = movimentacoes
@@ -602,11 +617,12 @@ export function FinanceiroTab() {
     if (!caixaAberto) return;
     const saldoFinal = getSaldoCaixa();
     setShowFecharCaixaModal(false);
+    const caixaId = caixaAberto.id;
     const { error } = await supabase.from('caixas').update({
       fechado_em: new Date().toISOString(),
       saldo_final: saldoFinal,
       observacao: fecharCaixaForm.observacao || null,
-    }).eq('id', caixaAberto.id);
+    }).eq('id', caixaId);
     if (error) {
       if (import.meta.env.DEV) console.error('Erro ao fechar caixa:', error);
       alert('Erro ao fechar caixa. Tente novamente.');
@@ -614,7 +630,10 @@ export function FinanceiroTab() {
     }
     setFecharCaixaForm({ observacao: '' });
     setCaixaAberto(null);
+    setUltimoCaixaFechadoId(caixaId);
+    setShowSucessoFecharCaixa(true);
     await loadData();
+    await loadCaixasFechados();
   }
 
   async function handleSangriaSuprimento() {
@@ -639,6 +658,17 @@ export function FinanceiroTab() {
     }
     setSangriaSuprimentoForm({ valor: '', descricao: '' });
     await loadData();
+  }
+
+  async function handleGerarRelatorioCaixa(caixaId: string) {
+    setRelatorioLoading(true);
+    try {
+      await gerarEAbirRelatorio(caixaId);
+    } catch (e) {
+      if (import.meta.env.DEV) console.error('Erro ao gerar relatório:', e);
+      alert('Erro ao gerar relatório. Tente novamente.');
+    }
+    setRelatorioLoading(false);
   }
 
   async function handleSincronizarVendas() {
@@ -1102,6 +1132,47 @@ export function FinanceiroTab() {
         </div>
       </Card>
 
+      {/* Caixas Fechados */}
+      {caixasFechados.length > 0 && (
+        <Card>
+          <div className="p-4 border-b">
+            <h3 className="font-semibold text-gray-800 flex items-center gap-2">
+              <Wallet className="w-4 h-4" /> Caixas Fechados ({caixasFechados.length})
+            </h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50 border-b">
+                <tr>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Abertura</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fechamento</th>
+                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Saldo Inicial</th>
+                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Saldo Final</th>
+                  <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Ações</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {caixasFechados.map(c => (
+                  <tr key={c.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatDataHora(c.aberto_em)}</td>
+                    <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatDataHora(c.fechado_em as string)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-medium text-gray-800">{formatCurrency(Number(c.saldo_inicial))}</td>
+                    <td className="px-4 py-3 text-right text-sm font-medium">{Number(c.saldo_final || 0) >= 0 ? <span className="text-emerald-600">{formatCurrency(Number(c.saldo_final))}</span> : <span className="text-red-600">{formatCurrency(Number(c.saldo_final))}</span>}</td>
+                    <td className="px-4 py-3 text-center">
+                      <button onClick={() => handleGerarRelatorioCaixa(c.id)} disabled={relatorioLoading}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-xs font-medium hover:bg-blue-100 transition-colors disabled:opacity-50">
+                        {relatorioLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                        Relatório
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
       {/* History Table */}
       <Card>
         <div className="p-4 border-b flex justify-between items-center">
@@ -1414,6 +1485,38 @@ export function FinanceiroTab() {
               <button onClick={() => setShowSangriaSuprimentoModal(false)} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50">Cancelar</button>
               <button onClick={handleSangriaSuprimento} className={`flex-1 px-4 py-2.5 text-white rounded-xl text-sm font-medium hover:shadow-md ${sangriaSuprimentoTipo === 'sangria' ? 'bg-gradient-to-r from-red-500 to-rose-600' : 'bg-gradient-to-r from-emerald-500 to-green-600'}`}>
                 {sangriaSuprimentoTipo === 'sangria' ? 'Registrar Sangria' : 'Registrar Suprimento'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sucesso ao Fechar Caixa Modal */}
+      {showSucessoFecharCaixa && ultimoCaixaFechadoId && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 text-center">
+            <div className="bg-green-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+              <CheckCircle className="w-8 h-8 text-green-600" />
+            </div>
+            <h3 className="text-xl font-bold text-gray-800 mb-2">Caixa Fechado com Sucesso!</h3>
+            <p className="text-sm text-gray-500 mb-6">Todas as movimentações foram registradas.</p>
+
+            <div className="flex flex-col gap-3">
+              <button onClick={() => { handleGerarRelatorioCaixa(ultimoCaixaFechadoId); }}
+                disabled={relatorioLoading}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-xl text-sm font-medium hover:shadow-md transition-all disabled:opacity-50">
+                {relatorioLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                Baixar Relatório do Caixa
+              </button>
+              <button onClick={() => { setRelatorioLoading(true); gerarEAbirRelatorio(ultimoCaixaFechadoId, false).catch(() => {}).finally(() => setRelatorioLoading(false)); }}
+                disabled={relatorioLoading}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gray-100 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-200 transition-all disabled:opacity-50">
+                <Search className="w-4 h-4" />
+                Ver Detalhes do Caixa
+              </button>
+              <button onClick={() => { setShowSucessoFecharCaixa(false); setUltimoCaixaFechadoId(null); }}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50 transition-all">
+                Fechar
               </button>
             </div>
           </div>
