@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Pedido, ItemPedido, MovimentacaoCaixa, FinanceiroResumo, CategoriaMovimentacaoCaixa, Caixa, TipoMovimentacaoCaixa } from '../types';
-import { buscarCaixaAberto } from '../lib/caixa';
+import { buscarCaixaAberto, sincronizarVendasCaixa } from '../lib/caixa';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip,
   ResponsiveContainer, PieChart as RePieChart, Pie, Cell,
@@ -643,33 +643,12 @@ export function FinanceiroTab() {
 
   async function handleSincronizarVendas() {
     if (!caixaAberto) { alert('Abra o caixa primeiro.'); return; }
-    const { data: pedidos } = await supabase
-      .from('pedidos')
-      .select('*')
-      .in('status', ['pronto', 'entregue']);
-    if (!pedidos || pedidos.length === 0) { alert('Nenhum pedido finalizado encontrado.'); return; }
-    let count = 0;
-    for (const pedido of pedidos) {
-      const { data: existente } = await supabase
-        .from('movimentacoes_caixa')
-        .select('id')
-        .eq('pedido_id', pedido.id)
-        .eq('tipo', 'venda')
-        .maybeSingle();
-      if (existente) continue;
-      const { error } = await supabase.from('movimentacoes_caixa').insert({
-        tipo: 'venda',
-        valor: Number(pedido.total),
-        descricao: `Venda #${pedido.id.slice(0, 8)}${pedido.nome_cliente ? ` - ${pedido.nome_cliente}` : pedido.mesa ? ` - Mesa ${pedido.mesa}` : ''}`,
-        categoria: 'Venda de pedido',
-        forma_pagamento: pedido.forma_pagamento || 'nao_informado',
-        data_movimentacao: new Date(pedido.fechado_at || pedido.updated_at || pedido.created_at).toISOString().split('T')[0],
-        pedido_id: pedido.id,
-        caixa_id: caixaAberto.id,
-      });
-      if (!error) count++;
+    const { sincronizadas, erro } = await sincronizarVendasCaixa();
+    if (erro) {
+      alert('Erro ao sincronizar: ' + erro);
+      return;
     }
-    alert(`${count} venda(s) sincronizada(s) com o caixa!`);
+    alert(`${sincronizadas} venda(s) sincronizada(s) com o caixa!`);
     await loadData();
   }
 
