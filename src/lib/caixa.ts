@@ -2,16 +2,20 @@ import { supabase } from './supabase';
 import { Caixa } from '../types';
 
 export async function buscarCaixaAberto(): Promise<Caixa | null> {
-  const { data, error } = await supabase
-    .from('caixas')
-    .select('*')
-    .is('fechado_em', null)
-    .order('aberto_em', { ascending: false })
-    .limit(1)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('caixas')
+      .select('*')
+      .is('fechado_em', null)
+      .order('aberto_em', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-  if (error || !data) return null;
-  return data;
+    if (error || !data) return null;
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 export async function registrarVendaPedido(pedidoId: string): Promise<void> {

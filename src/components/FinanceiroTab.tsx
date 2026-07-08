@@ -123,7 +123,7 @@ export function FinanceiroTab() {
           .lte('created_at', fimStr);
       }
 
-      queryPedidos = queryPedidos.order('created_at', { ascending: false });
+      queryPedidos = queryPedidos.order('created_at', { ascending: false }).limit(500);
 
       const { data: ped, error: pedError } = await queryPedidos;
       if (pedError) {
@@ -146,7 +146,7 @@ export function FinanceiroTab() {
           .lte('data_movimentacao', fimStr.split('T')[0]);
       }
 
-      queryMov = queryMov.order('data_movimentacao', { ascending: false });
+      queryMov = queryMov.order('data_movimentacao', { ascending: false }).limit(500);
 
       const { data: mov, error: movError } = await queryMov;
       if (movError) {
@@ -162,8 +162,10 @@ export function FinanceiroTab() {
         if (res) setResumos(res);
       } catch { /* tabela pode não existir */ }
 
-      const { data: cats } = await supabase.from('categorias_movimentacao_caixa').select('*').eq('ativo', true);
-      if (cats) setCategoriasMov(cats);
+      try {
+        const { data: cats } = await supabase.from('categorias_movimentacao_caixa').select('*').eq('ativo', true);
+        if (cats) setCategoriasMov(cats);
+      } catch { /* tabela pode não existir */ }
 
       // Reset history on period change
       setHistoryPedidos([]);
@@ -571,18 +573,26 @@ export function FinanceiroTab() {
   }
 
   async function loadCaixaAberto() {
-    const caixa = await buscarCaixaAberto();
-    setCaixaAberto(caixa);
+    try {
+      const caixa = await buscarCaixaAberto();
+      setCaixaAberto(caixa);
+    } catch {
+      setCaixaAberto(null);
+    }
   }
 
   async function loadCaixasFechados() {
-    const { data } = await supabase
-      .from('caixas')
-      .select('*')
-      .not('fechado_em', 'is', null)
-      .order('fechado_em', { ascending: false })
-      .limit(20);
-    if (data) setCaixasFechados(data);
+    try {
+      const { data } = await supabase
+        .from('caixas')
+        .select('*')
+        .not('fechado_em', 'is', null)
+        .order('fechado_em', { ascending: false })
+        .limit(20);
+      if (data) setCaixasFechados(data);
+    } catch {
+      setCaixasFechados([]);
+    }
   }
 
   function getSaldoCaixa(): number {
