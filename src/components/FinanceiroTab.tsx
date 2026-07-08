@@ -8,7 +8,8 @@ import {
   Receipt, Info,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { Pedido, ItemPedido, MovimentacaoCaixa, FinanceiroResumo, CategoriaMovimentacaoCaixa } from '../types';
+import { Pedido, ItemPedido, MovimentacaoCaixa, FinanceiroResumo, CategoriaMovimentacaoCaixa, Caixa, TipoMovimentacaoCaixa } from '../types';
+import { buscarCaixaAberto } from '../lib/caixa';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip,
   ResponsiveContainer, PieChart as RePieChart, Pie, Cell,
@@ -74,15 +75,28 @@ export function FinanceiroTab() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const HISTORY_PAGE_SIZE = 100;
 
+  const [caixaAberto, setCaixaAberto] = useState<Caixa | null>(null);
+  const [showAbrirCaixaModal, setShowAbrirCaixaModal] = useState(false);
+  const [showFecharCaixaModal, setShowFecharCaixaModal] = useState(false);
+  const [showSangriaSuprimentoModal, setShowSangriaSuprimentoModal] = useState(false);
+  const [sangriaSuprimentoTipo, setSangriaSuprimentoTipo] = useState<TipoMovimentacaoCaixa>('sangria');
+  const [abrirCaixaForm, setAbrirCaixaForm] = useState({ saldo_inicial: '', observacao: '' });
+  const [fecharCaixaForm, setFecharCaixaForm] = useState({ observacao: '' });
+  const [sangriaSuprimentoForm, setSangriaSuprimentoForm] = useState({ valor: '', descricao: '' });
+
   const Card = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
     <div className={`bg-white rounded-xl shadow-md p-4 ${className}`}>{children}</div>
   );
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadData(); loadCaixaAberto(); }, []);
 
   useEffect(() => {
     loadData();
   }, [periodoFiltro, dataInicio, dataFim]);
+
+  useEffect(() => {
+    loadCaixaAberto();
+  }, [movimentacoes]);
 
   async function loadData() {
     setLoading(true);
@@ -271,8 +285,8 @@ export function FinanceiroTab() {
     const ticketMedio = finalizados.length > 0 ? totalFinalizados / finalizados.length : 0;
     const custoTotal = finalizados.reduce((s, p) => s + (p.itens || []).reduce((si, i) => si + getCustoTotalItem(i), 0), 0);
     const taxaEntrega = finalizados.reduce((s, p) => s + Number(p.taxa_entrega || 0), 0);
-    const entradas = movNoPeriodo.filter(m => m.tipo === 'entrada').reduce((s, m) => s + Number(m.valor), 0);
-    const saidas = movNoPeriodo.filter(m => m.tipo === 'saida').reduce((s, m) => s + Number(m.valor), 0);
+    const entradas = movNoPeriodo.filter(m => ['entrada', 'suprimento', 'venda', 'ajuste'].includes(m.tipo)).reduce((s, m) => s + Number(m.valor), 0);
+    const saidas = movNoPeriodo.filter(m => ['saida', 'sangria'].includes(m.tipo)).reduce((s, m) => s + Number(m.valor), 0);
     const porPagamento = (status: string) => finalizados.filter(p => (p.forma_pagamento || 'nao_informado') === status).reduce((s, p) => s + Number(p.total), 0);
     const lucroBruto = receitaProdutos - custoTotal;
     const lucroLiquido = lucroBruto + taxaEntrega + entradas - saidas;
@@ -313,7 +327,7 @@ export function FinanceiroTab() {
     movNoPeriodo.forEach(m => {
       const key = new Date(m.data_movimentacao).toLocaleDateString('pt-BR');
       if (!dias[key]) dias[key] = { entrada: 0, saida: 0 };
-      if (m.tipo === 'entrada') dias[key].entrada += Number(m.valor);
+      if (['entrada', 'venda', 'suprimento', 'ajuste'].includes(m.tipo)) dias[key].entrada += Number(m.valor);
       else dias[key].saida += Number(m.valor);
     });
     return Object.entries(dias).sort(([a], [b]) => a.localeCompare(b)).map(([dia, v]) => ({ dia, ...v }));
@@ -366,6 +380,17 @@ export function FinanceiroTab() {
   const getStatusLabel = (s: string) => ({ novo: 'Novo', aberto: 'Aberto', em_preparo: 'Em Preparo', pronto: 'Finalizado', entregue: 'Entregue', cancelado: 'Cancelado' }[s] || s);
   const getStatusColor = (s: string) => ({ novo: 'bg-yellow-100 text-yellow-700', aberto: 'bg-yellow-100 text-yellow-700', em_preparo: 'bg-blue-100 text-blue-700', pronto: 'bg-green-100 text-green-700', entregue: 'bg-gray-100 text-gray-700', cancelado: 'bg-red-100 text-red-700' }[s] || 'bg-gray-100 text-gray-700');
 
+  const MOV_TIPO_LABEL: Record<string, string> = { entrada: 'Entrada', saida: 'Saída', sangria: 'Sangria', suprimento: 'Suprimento', venda: 'Venda', ajuste: 'Ajuste' };
+  const MOV_TIPO_COLOR: Record<string, string> = { entrada: 'bg-green-100 text-green-700', saida: 'bg-red-100 text-red-700', sangria: 'bg-orange-100 text-orange-700', suprimento: 'bg-blue-100 text-blue-700', venda: 'bg-emerald-100 text-emerald-700', ajuste: 'bg-yellow-100 text-yellow-700' };
+  const MOV_TIPO_ICON = { entrada: ArrowUpCircle, saida: ArrowDownCircle, sangria: ArrowDownCircle, suprimento: ArrowUpCircle, venda: TrendingUp, ajuste: AlertTriangle };
+
+  function matchTipoFilter(m: MovimentacaoCaixa, filter: string): boolean {
+    if (!filter) return true;
+    if (filter === 'entrada') return ['entrada', 'suprimento', 'venda', 'ajuste'].includes(m.tipo);
+    if (filter === 'saida') return ['saida', 'sangria'].includes(m.tipo);
+    return m.tipo === filter;
+  }
+
   const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: string }) => {
     if (!active || !payload) return null;
     return (
@@ -383,7 +408,7 @@ export function FinanceiroTab() {
     if (!caixaForm.data_movimentacao) { alert('Data é obrigatória.'); return; }
 
     setCaixaLoading(true);
-    const payload = {
+    const payload: Record<string, unknown> = {
       tipo: caixaTipo,
       valor,
       descricao: caixaForm.descricao.trim(),
@@ -392,6 +417,9 @@ export function FinanceiroTab() {
       observacao: caixaForm.observacao || null,
       data_movimentacao: caixaForm.data_movimentacao,
     };
+    if (!caixaEditId && caixaAberto) {
+      payload.caixa_id = caixaAberto.id;
+    }
 
     try {
       if (caixaEditId) {
@@ -441,6 +469,10 @@ export function FinanceiroTab() {
   }
 
   function abrirEditarMov(m: MovimentacaoCaixa) {
+    if (!['entrada', 'saida'].includes(m.tipo)) {
+      alert('Movimentações do tipo ' + MOV_TIPO_LABEL[m.tipo] + ' não podem ser editadas manualmente.');
+      return;
+    }
     setCaixaTipo(m.tipo);
     setCaixaEditId(m.id);
     setCaixaForm({
@@ -490,12 +522,12 @@ export function FinanceiroTab() {
       const porPag = (st: string) => fins.filter(p => (p.forma_pagamento || 'nao_informado') === st).reduce((s, p) => s + Number(p.total), 0);
       const custoDel = fins.reduce((s, p) => s + (p.itens || []).reduce((si, i) => si + getCustoTotalItem(i), 0), 0);
       const entradasDel = movsParaLimpar.filter(m => {
-        if (m.tipo !== 'entrada') return false;
+        if (!['entrada', 'venda', 'suprimento', 'ajuste'].includes(m.tipo)) return false;
         const d = new Date(m.data_movimentacao); d.setHours(0, 0, 0, 0);
         return d < limite;
       }).reduce((s, m) => s + Number(m.valor), 0);
       const saidasDel = movsParaLimpar.filter(m => {
-        if (m.tipo !== 'saida') return false;
+        if (!['saida', 'sangria'].includes(m.tipo)) return false;
         const d = new Date(m.data_movimentacao); d.setHours(0, 0, 0, 0);
         return d < limite;
       }).reduce((s, m) => s + Number(m.valor), 0);
@@ -531,6 +563,114 @@ export function FinanceiroTab() {
       return `"${str.replace(/"/g, '""')}"`;
     }
     return str;
+  }
+
+  async function loadCaixaAberto() {
+    const caixa = await buscarCaixaAberto();
+    setCaixaAberto(caixa);
+  }
+
+  function getSaldoCaixa(): number {
+    if (!caixaAberto) return 0;
+    const entradas = movimentacoes
+      .filter(m => m.caixa_id === caixaAberto.id && (m.tipo === 'entrada' || m.tipo === 'venda' || m.tipo === 'suprimento'))
+      .reduce((s, m) => s + Number(m.valor), 0);
+    const saidas = movimentacoes
+      .filter(m => m.caixa_id === caixaAberto.id && (m.tipo === 'saida' || m.tipo === 'sangria'))
+      .reduce((s, m) => s + Number(m.valor), 0);
+    return Number(caixaAberto.saldo_inicial) + entradas - saidas;
+  }
+
+  async function handleAbrirCaixa() {
+    const saldoInicial = parseFloat(abrirCaixaForm.saldo_inicial) || 0;
+    setShowAbrirCaixaModal(false);
+    const { error } = await supabase.from('caixas').insert({
+      saldo_inicial: saldoInicial,
+      observacao: abrirCaixaForm.observacao || null,
+    });
+    if (error) {
+      if (import.meta.env.DEV) console.error('Erro ao abrir caixa:', error);
+      alert('Erro ao abrir caixa. Tente novamente.');
+      return;
+    }
+    setAbrirCaixaForm({ saldo_inicial: '', observacao: '' });
+    await loadData();
+    await loadCaixaAberto();
+  }
+
+  async function handleFecharCaixa() {
+    if (!caixaAberto) return;
+    const saldoFinal = getSaldoCaixa();
+    setShowFecharCaixaModal(false);
+    const { error } = await supabase.from('caixas').update({
+      fechado_em: new Date().toISOString(),
+      saldo_final: saldoFinal,
+      observacao: fecharCaixaForm.observacao || null,
+    }).eq('id', caixaAberto.id);
+    if (error) {
+      if (import.meta.env.DEV) console.error('Erro ao fechar caixa:', error);
+      alert('Erro ao fechar caixa. Tente novamente.');
+      return;
+    }
+    setFecharCaixaForm({ observacao: '' });
+    setCaixaAberto(null);
+    await loadData();
+  }
+
+  async function handleSangriaSuprimento() {
+    const valor = parseFloat(sangriaSuprimentoForm.valor);
+    if (!valor || valor <= 0) { alert('Valor deve ser positivo.'); return; }
+    if (!sangriaSuprimentoForm.descricao.trim()) { alert('Descrição é obrigatória.'); return; }
+    if (!caixaAberto) { alert('Nenhum caixa aberto.'); return; }
+    setShowSangriaSuprimentoModal(false);
+    const { error } = await supabase.from('movimentacoes_caixa').insert({
+      tipo: sangriaSuprimentoTipo,
+      valor,
+      descricao: sangriaSuprimentoForm.descricao.trim(),
+      categoria: sangriaSuprimentoTipo === 'sangria' ? 'Sangria' : 'Suprimento',
+      forma_pagamento: 'dinheiro',
+      data_movimentacao: new Date().toISOString().split('T')[0],
+      caixa_id: caixaAberto.id,
+    });
+    if (error) {
+      if (import.meta.env.DEV) console.error('Erro ao registrar:', error);
+      alert('Erro ao registrar. Tente novamente.');
+      return;
+    }
+    setSangriaSuprimentoForm({ valor: '', descricao: '' });
+    await loadData();
+  }
+
+  async function handleSincronizarVendas() {
+    if (!caixaAberto) { alert('Abra o caixa primeiro.'); return; }
+    const { data: pedidos } = await supabase
+      .from('pedidos')
+      .select('*')
+      .in('status', ['pronto', 'entregue']);
+    if (!pedidos || pedidos.length === 0) { alert('Nenhum pedido finalizado encontrado.'); return; }
+    let count = 0;
+    for (const pedido of pedidos) {
+      const { data: existente } = await supabase
+        .from('movimentacoes_caixa')
+        .select('id')
+        .eq('pedido_id', pedido.id)
+        .eq('tipo', 'venda')
+        .maybeSingle();
+      if (existente) continue;
+      const { error } = await supabase.from('movimentacoes_caixa').insert({
+        tipo: 'venda',
+        valor: Number(pedido.total),
+        descricao: `Venda #${pedido.id.slice(0, 8)}${pedido.nome_cliente ? ` - ${pedido.nome_cliente}` : pedido.mesa ? ` - Mesa ${pedido.mesa}` : ''}`,
+        categoria: 'Venda de pedido',
+        forma_pagamento: pedido.forma_pagamento || 'nao_informado',
+        data_movimentacao: new Date(pedido.fechado_at || pedido.updated_at || pedido.created_at).toISOString().split('T')[0],
+        pedido_id: pedido.id,
+        caixa_id: caixaAberto.id,
+      });
+      if (!error) count++;
+    }
+    alert(`${count} venda(s) sincronizada(s) com o caixa!`);
+    await loadData();
   }
 
   function exportarCSV() {
@@ -589,6 +729,80 @@ export function FinanceiroTab() {
           </button>
         </div>
       </div>
+
+      {/* Caixa Status */}
+      <Card>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-lg ${caixaAberto ? 'bg-green-100' : 'bg-gray-100'}`}>
+              <Wallet className={`w-6 h-6 ${caixaAberto ? 'text-green-600' : 'text-gray-400'}`} />
+            </div>
+            <div>
+              <h3 className="font-bold text-gray-800">
+                Caixa {caixaAberto ? 'Aberto' : 'Fechado'}
+              </h3>
+              <p className="text-sm text-gray-500">
+                {caixaAberto
+                  ? `Aberto em ${new Date(caixaAberto.aberto_em).toLocaleString('pt-BR')}`
+                  : 'Nenhum caixa aberto no momento'}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {caixaAberto ? (
+              <>
+                <button onClick={() => { setSangriaSuprimentoTipo('sangria'); setSangriaSuprimentoForm({ valor: '', descricao: '' }); setShowSangriaSuprimentoModal(true); }}
+                  className="px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors flex items-center gap-1.5">
+                  <ArrowDownCircle className="w-4 h-4" /> Sangria
+                </button>
+                <button onClick={() => { setSangriaSuprimentoTipo('suprimento'); setSangriaSuprimentoForm({ valor: '', descricao: '' }); setShowSangriaSuprimentoModal(true); }}
+                  className="px-4 py-2 bg-green-50 text-green-600 border border-green-200 rounded-lg text-sm font-medium hover:bg-green-100 transition-colors flex items-center gap-1.5">
+                  <ArrowUpCircle className="w-4 h-4" /> Suprimento
+                </button>
+                <button onClick={handleSincronizarVendas}
+                  className="px-4 py-2 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-sm font-medium hover:bg-blue-100 transition-colors flex items-center gap-1.5">
+                  <ShoppingCart className="w-4 h-4" /> Sinc. Vendas
+                </button>
+                <button onClick={() => { setFecharCaixaForm({ observacao: '' }); setShowFecharCaixaModal(true); }}
+                  className="px-4 py-2 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-lg text-sm font-medium hover:shadow-md transition-all flex items-center gap-1.5">
+                  <Wallet className="w-4 h-4" /> Fechar Caixa
+                </button>
+              </>
+            ) : (
+              <button onClick={() => { setAbrirCaixaForm({ saldo_inicial: '', observacao: '' }); setShowAbrirCaixaModal(true); }}
+                className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-lg text-sm font-medium hover:shadow-md transition-all flex items-center gap-1.5">
+                <Plus className="w-4 h-4" /> Abrir Caixa
+              </button>
+            )}
+          </div>
+        </div>
+        {caixaAberto && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 pt-4 border-t border-gray-100">
+            <div className="text-center">
+              <p className="text-xs text-gray-500">Saldo Inicial</p>
+              <p className="text-base font-bold text-gray-800">{formatCurrency(Number(caixaAberto.saldo_inicial))}</p>
+            </div>
+            <div className="text-center">
+              <p className="text-xs text-gray-500">Entradas + Vendas</p>
+              <p className="text-base font-bold text-green-600">
+                {formatCurrency(movimentacoes.filter(m => m.caixa_id === caixaAberto.id && (m.tipo === 'entrada' || m.tipo === 'venda' || m.tipo === 'suprimento')).reduce((s, m) => s + Number(m.valor), 0))}
+              </p>
+            </div>
+            <div className="text-center">
+              <p className="text-xs text-gray-500">Saídas + Sangrias</p>
+              <p className="text-base font-bold text-red-600">
+                {formatCurrency(movimentacoes.filter(m => m.caixa_id === caixaAberto.id && (m.tipo === 'saida' || m.tipo === 'sangria')).reduce((s, m) => s + Number(m.valor), 0))}
+              </p>
+            </div>
+            <div className="text-center">
+              <p className="text-xs text-gray-500">Saldo Atual</p>
+              <p className={`text-base font-bold ${getSaldoCaixa() >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                {formatCurrency(getSaldoCaixa())}
+              </p>
+            </div>
+          </div>
+        )}
+      </Card>
 
       {/* Period Filters */}
       <Card>
@@ -651,12 +865,12 @@ export function FinanceiroTab() {
         <Card className="border-l-4 border-green-400">
           <div className="flex items-center gap-2 mb-1"><ArrowUpCircle className="w-4 h-4 text-green-500" /><span className="text-xs text-gray-500">Entradas (Caixa)</span></div>
           <p className="text-lg font-bold text-green-600">{formatCurrency(stats.totalEntradas)}</p>
-          <button onClick={() => setShowDetalheModal({ titulo: 'Entradas por Categoria', dados: [...new Set(movNoPeriodo.filter(m => m.tipo === 'entrada').map(m => m.categoria || 'Sem categoria'))].map(cat => ({ label: cat, valor: formatCurrency(movNoPeriodo.filter(m => m.tipo === 'entrada' && (m.categoria || 'Sem categoria') === cat).reduce((s, m) => s + Number(m.valor), 0)) })) })} className="text-xs text-blue-500 hover:underline mt-1">Ver Detalhes</button>
+          <button onClick={() => setShowDetalheModal({ titulo: 'Entradas por Categoria', dados: [...new Set(movNoPeriodo.filter(m => ['entrada', 'venda', 'suprimento', 'ajuste'].includes(m.tipo)).map(m => m.categoria || 'Sem categoria'))].map(cat => ({ label: cat, valor: formatCurrency(movNoPeriodo.filter(m => ['entrada', 'venda', 'suprimento', 'ajuste'].includes(m.tipo) && (m.categoria || 'Sem categoria') === cat).reduce((s, m) => s + Number(m.valor), 0)) })) })} className="text-xs text-blue-500 hover:underline mt-1">Ver Detalhes</button>
         </Card>
         <Card className="border-l-4 border-red-400">
           <div className="flex items-center gap-2 mb-1"><ArrowDownCircle className="w-4 h-4 text-red-500" /><span className="text-xs text-gray-500">Saídas (Caixa)</span></div>
           <p className="text-lg font-bold text-red-600">{formatCurrency(stats.totalSaidas)}</p>
-          <button onClick={() => setShowDetalheModal({ titulo: 'Saídas por Categoria', dados: [...new Set(movNoPeriodo.filter(m => m.tipo === 'saida').map(m => m.categoria || 'Sem categoria'))].map(cat => ({ label: cat, valor: formatCurrency(movNoPeriodo.filter(m => m.tipo === 'saida' && (m.categoria || 'Sem categoria') === cat).reduce((s, m) => s + Number(m.valor), 0)) })) })} className="text-xs text-blue-500 hover:underline mt-1">Ver Detalhes</button>
+          <button onClick={() => setShowDetalheModal({ titulo: 'Saídas por Categoria', dados: [...new Set(movNoPeriodo.filter(m => ['saida', 'sangria'].includes(m.tipo)).map(m => m.categoria || 'Sem categoria'))].map(cat => ({ label: cat, valor: formatCurrency(movNoPeriodo.filter(m => ['saida', 'sangria'].includes(m.tipo) && (m.categoria || 'Sem categoria') === cat).reduce((s, m) => s + Number(m.valor), 0)) })) })} className="text-xs text-blue-500 hover:underline mt-1">Ver Detalhes</button>
         </Card>
         <Card className="border-l-4 border-blue-400">
           <div className="flex items-center gap-2 mb-1"><Wallet className="w-4 h-4 text-blue-500" /><span className="text-xs text-gray-500">Saldo Operacional (Caixa)</span></div>
@@ -857,8 +1071,8 @@ export function FinanceiroTab() {
         <div className="flex flex-wrap gap-2 mb-4">
           {['', 'entrada', 'saida'].map(t => (
             <button key={t} onClick={() => setFiltroMovTipo(t)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filtroMovTipo === t ? (t === 'entrada' ? 'bg-green-100 text-green-700' : t === 'saida' ? 'bg-red-100 text-red-700' : 'bg-gray-800 text-white') : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-              {t === '' ? 'Todas' : t === 'entrada' ? 'Entradas' : 'Saídas'}
+               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filtroMovTipo === t ? (t === 'entrada' ? 'bg-green-100 text-green-700' : t === 'saida' ? 'bg-red-100 text-red-700' : 'bg-gray-800 text-white') : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+              {t === '' ? 'Todas' : t === 'entrada' ? 'Entradas (+Vendas/Suprimentos)' : 'Saídas (+Sangrias)'}
             </button>
           ))}
         </div>
@@ -875,20 +1089,22 @@ export function FinanceiroTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {movNoPeriodo.filter(m => !filtroMovTipo || m.tipo === filtroMovTipo).map(m => (
+              {movNoPeriodo.filter(m => matchTipoFilter(m, filtroMovTipo)).map(m => {
+                const TipoIcon = MOV_TIPO_ICON[m.tipo] || ArrowDownCircle;
+                return (
                 <tr key={m.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 text-sm text-gray-500">{formatDateShort(m.data_movimentacao)}</td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${m.tipo === 'entrada' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                      {m.tipo === 'entrada' ? <ArrowUpCircle className="w-3 h-3" /> : <ArrowDownCircle className="w-3 h-3" />}
-                      {m.tipo === 'entrada' ? 'Entrada' : 'Saída'}
+                    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${MOV_TIPO_COLOR[m.tipo] || 'bg-gray-100 text-gray-700'}`}>
+                      <TipoIcon className="w-3 h-3" />
+                      {MOV_TIPO_LABEL[m.tipo] || m.tipo}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-800">{m.descricao}</td>
                   <td className="px-4 py-3 text-sm text-gray-500">{m.categoria || '-'}</td>
                   <td className="px-4 py-3 text-sm text-gray-500">{m.forma_pagamento}</td>
-                  <td className={`px-4 py-3 text-right text-sm font-bold ${m.tipo === 'entrada' ? 'text-green-600' : 'text-red-600'}`}>
-                    {m.tipo === 'entrada' ? '+' : '-'}{formatCurrency(m.valor)}
+                  <td className={`px-4 py-3 text-right text-sm font-bold ${m.tipo === 'entrada' || m.tipo === 'venda' || m.tipo === 'suprimento' || m.tipo === 'ajuste' ? 'text-green-600' : 'text-red-600'}`}>
+                    {(m.tipo === 'entrada' || m.tipo === 'venda' || m.tipo === 'suprimento') ? '+' : '-'}{formatCurrency(m.valor)}
                   </td>
                   <td className="px-4 py-3 text-center">
                     <div className="flex items-center justify-center gap-1">
@@ -897,8 +1113,9 @@ export function FinanceiroTab() {
                     </div>
                   </td>
                 </tr>
-              ))}
-              {movNoPeriodo.filter(m => !filtroMovTipo || m.tipo === filtroMovTipo).length === 0 && (
+                );
+              })}
+              {movNoPeriodo.filter(m => matchTipoFilter(m, filtroMovTipo)).length === 0 && (
                 <tr><td colSpan={7} className="text-center py-8 text-gray-400 text-sm">Nenhuma movimentação no período</td></tr>
               )}
             </tbody>
@@ -1116,6 +1333,108 @@ export function FinanceiroTab() {
               <button onClick={() => { setShowLimparModal(false); setLimparMensagem(''); }} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50" disabled={limparLoading}>Cancelar</button>
               <button onClick={handleLimparHistorico} disabled={limparLoading} className="flex-1 px-4 py-2.5 bg-red-500 text-white rounded-xl text-sm font-medium hover:bg-red-600 disabled:opacity-50 flex items-center justify-center gap-2">
                 {limparLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Trash2 className="w-4 h-4" /> Limpar</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Abrir Caixa Modal */}
+      {showAbrirCaixaModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="bg-green-100 p-2 rounded-lg"><Wallet className="w-6 h-6 text-green-600" /></div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-800">Abrir Caixa</h3>
+                  <p className="text-sm text-gray-500">Iniciar novo movimento de caixa</p>
+                </div>
+              </div>
+              <button onClick={() => setShowAbrirCaixaModal(false)} className="p-2 hover:bg-gray-100 rounded-lg"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Saldo Inicial (R$)</label>
+                <input type="number" step="0.01" min="0" placeholder="0,00" value={abrirCaixaForm.saldo_inicial} onChange={e => setAbrirCaixaForm(f => ({ ...f, saldo_inicial: e.target.value }))} className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Observação</label>
+                <input type="text" placeholder="Observação opcional..." value={abrirCaixaForm.observacao} onChange={e => setAbrirCaixaForm(f => ({ ...f, observacao: e.target.value }))} className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-500" />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button onClick={() => setShowAbrirCaixaModal(false)} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50">Cancelar</button>
+              <button onClick={handleAbrirCaixa} className="flex-1 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-xl text-sm font-medium hover:shadow-md">Abrir Caixa</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fechar Caixa Modal */}
+      {showFecharCaixaModal && caixaAberto && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="bg-orange-100 p-2 rounded-lg"><Wallet className="w-6 h-6 text-orange-600" /></div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-800">Fechar Caixa</h3>
+                  <p className="text-sm text-gray-500">Encerrar o movimento atual</p>
+                </div>
+              </div>
+              <button onClick={() => setShowFecharCaixaModal(false)} className="p-2 hover:bg-gray-100 rounded-lg"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="bg-gray-50 rounded-xl p-4 space-y-2 mb-4">
+              <div className="flex justify-between text-sm"><span className="text-gray-500">Saldo Inicial</span><span className="font-medium">{formatCurrency(Number(caixaAberto.saldo_inicial))}</span></div>
+              <div className="flex justify-between text-sm"><span className="text-gray-500">Entradas + Vendas + Suprimentos</span><span className="font-medium text-green-600">{formatCurrency(movimentacoes.filter(m => m.caixa_id === caixaAberto.id && (m.tipo === 'entrada' || m.tipo === 'venda' || m.tipo === 'suprimento')).reduce((s, m) => s + Number(m.valor), 0))}</span></div>
+              <div className="flex justify-between text-sm"><span className="text-gray-500">Saídas + Sangrias</span><span className="font-medium text-red-600">{formatCurrency(movimentacoes.filter(m => m.caixa_id === caixaAberto.id && (m.tipo === 'saida' || m.tipo === 'sangria')).reduce((s, m) => s + Number(m.valor), 0))}</span></div>
+              <div className="border-t pt-2 flex justify-between text-sm font-bold"><span>Saldo Final</span><span className={getSaldoCaixa() >= 0 ? 'text-emerald-600' : 'text-red-600'}>{formatCurrency(getSaldoCaixa())}</span></div>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Observação (opcional)</label>
+                <input type="text" placeholder="Observação..." value={fecharCaixaForm.observacao} onChange={e => setFecharCaixaForm(f => ({ ...f, observacao: e.target.value }))} className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-500" />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button onClick={() => setShowFecharCaixaModal(false)} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50">Cancelar</button>
+              <button onClick={handleFecharCaixa} className="flex-1 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-xl text-sm font-medium hover:shadow-md">Confirmar Fechamento</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sangria / Suprimento Modal */}
+      {showSangriaSuprimentoModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className={sangriaSuprimentoTipo === 'sangria' ? 'bg-red-100 p-2 rounded-lg' : 'bg-green-100 p-2 rounded-lg'}>
+                  {sangriaSuprimentoTipo === 'sangria' ? <ArrowDownCircle className="w-6 h-6 text-red-600" /> : <ArrowUpCircle className="w-6 h-6 text-green-600" />}
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-800">{sangriaSuprimentoTipo === 'sangria' ? 'Sangria' : 'Suprimento'}</h3>
+                  <p className="text-sm text-gray-500">{sangriaSuprimentoTipo === 'sangria' ? 'Retirada de valor do caixa' : 'Inserção de valor no caixa'}</p>
+                </div>
+              </div>
+              <button onClick={() => setShowSangriaSuprimentoModal(false)} className="p-2 hover:bg-gray-100 rounded-lg"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Valor (R$) *</label>
+                <input type="number" step="0.01" min="0.01" placeholder="0,00" value={sangriaSuprimentoForm.valor} onChange={e => setSangriaSuprimentoForm(f => ({ ...f, valor: e.target.value }))} className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Descrição *</label>
+                <input type="text" placeholder={sangriaSuprimentoTipo === 'sangria' ? 'Ex: Retirada para contas' : 'Ex: Aporte de capital'} value={sangriaSuprimentoForm.descricao} onChange={e => setSangriaSuprimentoForm(f => ({ ...f, descricao: e.target.value }))} className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-500" />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button onClick={() => setShowSangriaSuprimentoModal(false)} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50">Cancelar</button>
+              <button onClick={handleSangriaSuprimento} className={`flex-1 px-4 py-2.5 text-white rounded-xl text-sm font-medium hover:shadow-md ${sangriaSuprimentoTipo === 'sangria' ? 'bg-gradient-to-r from-red-500 to-rose-600' : 'bg-gradient-to-r from-emerald-500 to-green-600'}`}>
+                {sangriaSuprimentoTipo === 'sangria' ? 'Registrar Sangria' : 'Registrar Suprimento'}
               </button>
             </div>
           </div>

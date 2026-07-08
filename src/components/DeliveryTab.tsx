@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Plus, Truck, Trash2, ChefHat, CheckCircle, XCircle, Clock, Phone, MapPin, User } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Produto, Pedido, Categoria } from '../types';
+import { registrarVendaPedido } from '../lib/caixa';
 
 export function DeliveryTab() {
   const [produtos, setProdutos] = useState<Produto[]>([]);
@@ -170,6 +171,9 @@ export function DeliveryTab() {
         })
         .eq('id', pedidoId);
       if (error) throw error;
+      if (novoStatus === 'pronto' || novoStatus === 'entregue') {
+        registrarVendaPedido(pedidoId);
+      }
     } catch (error) {
       if (import.meta.env.DEV) console.error('Erro ao atualizar status do pedido:', error);
       window.alert('Erro ao atualizar status do pedido. Tente novamente.');

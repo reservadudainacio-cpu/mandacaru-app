@@ -77,9 +77,22 @@ export interface MovimentacaoEstoque {
   produtos?: Produto;
 }
 
+export interface Caixa {
+  id: string;
+  aberto_em: string;
+  fechado_em: string | null;
+  saldo_inicial: number;
+  saldo_final: number | null;
+  observacao: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type TipoMovimentacaoCaixa = 'entrada' | 'saida' | 'sangria' | 'suprimento' | 'venda' | 'ajuste';
+
 export interface MovimentacaoCaixa {
   id: string;
-  tipo: 'entrada' | 'saida';
+  tipo: TipoMovimentacaoCaixa;
   valor: number;
   descricao: string;
   categoria: string | null;
@@ -87,6 +100,7 @@ export interface MovimentacaoCaixa {
   observacao: string | null;
   data_movimentacao: string;
   pedido_id: string | null;
+  caixa_id: string | null;
   created_at: string;
   updated_at: string;
 }
